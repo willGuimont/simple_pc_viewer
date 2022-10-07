@@ -3,3 +3,4 @@ glfw
 PyOpenGL
 PyOpenGL_accelerate
 PyGLM
+PyYaml

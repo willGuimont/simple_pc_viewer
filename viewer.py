@@ -1,24 +1,21 @@
+import ctypes
+import yaml
 import platform
+from typing import Optional, Dict, List
 
 import OpenGL.GL as gl
 import glfw
 import glm
 import numpy as np
 
-SCREEN_WIDTH = 256 * 3
-SCREEN_HEIGHT = 256 * 3
-
-AZIMUTH = 0
-ALTITUDE = np.pi / 6
-DISTANCE = 0.5
-
-MODEL_MAT_UNIFORM = 'modelMat'
-VIEW_MAT_UNIFORM = 'viewMat'
-PROJ_MAT_UNIFORM = 'projMat'
-POINT_SIZE = 'pointSize'
+PROJ_MAT_UNIFORM = 'vertProjMat'
+VIEW_MAT_UNIFORM = 'vertViewMat'
+MODEL_MAT_UNIFORM = 'vertModelMat'
+POINT_SIZE = 'vertPointSize'
+RENDER_MODE = 'vertRenderMode'
 
 
-def create_window(title):
+def create_window(title, screen_width, screen_height):
     # initialize the library
     if not glfw.init():
         return
@@ -30,39 +27,12 @@ def create_window(title):
         glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
 
     # create a windowed mode window and its OpenGL context
-    window = glfw.create_window(SCREEN_WIDTH, SCREEN_HEIGHT, title, None, None)
+    window = glfw.create_window(screen_width, screen_height, title, None, None)
     if not window:
         glfw.terminate()
         return
     glfw.make_context_current(window)
 
-    def framebuffer_size_callback(_, width, height):
-        global SCREEN_WIDTH, SCREEN_HEIGHT
-        SCREEN_WIDTH = width
-        SCREEN_HEIGHT = height
-        gl.glViewport(0, 0, width, height)
-
-    glfw.set_framebuffer_size_callback(window, framebuffer_size_callback)
-
-    def key_callback(_, key, scancode, action, mods):
-        global AZIMUTH, ALTITUDE, DISTANCE
-        d_angle = 0.01
-        if key == glfw.KEY_ESCAPE:
-            glfw.set_window_should_close(window, True)
-        elif key == glfw.KEY_A:
-            AZIMUTH -= d_angle
-        elif key == glfw.KEY_D:
-            AZIMUTH += d_angle
-        elif key == glfw.KEY_S:
-            ALTITUDE += d_angle
-        elif key == glfw.KEY_W:
-            ALTITUDE -= d_angle
-        elif key == glfw.KEY_Q:
-            DISTANCE += 0.01
-        elif key == glfw.KEY_E:
-            DISTANCE -= 0.01
-
-    glfw.set_key_callback(window, key_callback)
     return window
 
 
@@ -100,18 +70,33 @@ def setup_shaders():
     view_mat_location = gl.glGetUniformLocation(shader_program, VIEW_MAT_UNIFORM)
     proj_mat_location = gl.glGetUniformLocation(shader_program, PROJ_MAT_UNIFORM)
     point_size_location = gl.glGetUniformLocation(shader_program, POINT_SIZE)
+    render_mode_location = gl.glGetUniformLocation(shader_program, RENDER_MODE)
 
     return shader_program, [vertex_shader, fragment_shader], {
         MODEL_MAT_UNIFORM: model_mat_location,
         VIEW_MAT_UNIFORM: view_mat_location,
         PROJ_MAT_UNIFORM: proj_mat_location,
-        POINT_SIZE: point_size_location
+        POINT_SIZE: point_size_location,
+        RENDER_MODE: render_mode_location,
     }
 
 
-def setup_vertices(point_cloud: np.ndarray):
-    vertices = point_cloud.astype(np.float32)
-    max_dist = np.max(np.linalg.norm(vertices, axis=1))
+def setup_buffers(point_cloud, labels, color_map):
+    has_labels = labels is not None
+
+    size_per_point = 4
+    if has_labels:
+        size_per_point += 3
+
+    vertices = np.zeros((point_cloud.shape[0], size_per_point), dtype=np.float32)
+
+    vertices[:, :4] = point_cloud
+    if has_labels:
+        for i, label in enumerate(labels):
+            if label in color_map:
+                vertices[i, 4:7] = color_map[label][::-1]
+
+    max_dist = np.max(np.linalg.norm(vertices[:, :3], axis=1))
     vertices[:, :3] /= max_dist
 
     vao = gl.glGenVertexArrays(1)
@@ -128,8 +113,13 @@ def setup_vertices(point_cloud: np.ndarray):
     gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, indices, gl.GL_STATIC_DRAW)
 
     # position
-    gl.glVertexAttribPointer(0, 4, gl.GL_FLOAT, gl.GL_FALSE, 0 * vertices.itemsize, None)
+    gl.glVertexAttribPointer(0, 4, gl.GL_FLOAT, gl.GL_FALSE, size_per_point * vertices.itemsize, None)
     gl.glEnableVertexAttribArray(0)
+
+    if has_labels:
+        gl.glVertexAttribPointer(1, 3, gl.GL_FLOAT, gl.GL_FALSE, size_per_point * vertices.itemsize,
+                                 ctypes.c_void_p(4 * vertices.itemsize))
+        gl.glEnableVertexAttribArray(1)
 
     gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
     gl.glBindVertexArray(0)
@@ -137,26 +127,83 @@ def setup_vertices(point_cloud: np.ndarray):
     return vao, vbo, ebo
 
 
-def show_point_cloud(point_cloud: np.ndarray):
-    window = create_window('Render')
+def show_point_cloud(win_title: str,
+                     point_cloud: np.ndarray,
+                     label: Optional[np.ndarray] = None,
+                     color_map: Dict[int, List[int]] = None,
+                     screen_width: int = 256 * 3,
+                     screen_height: int = 256 * 3,
+                     azimuth: float = 0,
+                     altitude: float = np.pi / 6,
+                     distance: float = 0.5,
+                     x: float = 0,
+                     y: float = 0,
+                     z: float = 0):
+    if label is not None and color_map is None:
+        raise ValueError('Need to provide colod_map')
+
+    window = create_window(win_title, screen_width, screen_height)
     shader_program, shaders, uniforms = setup_shaders()
-    vao, vbo, ebo = setup_vertices(point_cloud)
+    vao, vbo, ebo = setup_buffers(point_cloud, label, color_map)
+    render_mode = 0
+    render_mode_dict = {0: 0, 1: 0.1, 2: 0.2}
+
+    def framebuffer_size_callback(_, width, height):
+        nonlocal screen_width, screen_height
+        screen_width = width
+        screen_height = height
+        gl.glViewport(0, 0, screen_width, screen_height)
+
+    glfw.set_framebuffer_size_callback(window, framebuffer_size_callback)
+
+    def key_callback(_, key, scancode, action, mods):
+        nonlocal azimuth, altitude, distance, x, y, z, render_mode
+        d_angle = 0.01
+        if key == glfw.KEY_ESCAPE:
+            glfw.set_window_should_close(window, True)
+        elif key == glfw.KEY_A:
+            azimuth -= d_angle
+        elif key == glfw.KEY_D:
+            azimuth += d_angle
+        elif key == glfw.KEY_S:
+            altitude += d_angle
+        elif key == glfw.KEY_W:
+            altitude -= d_angle
+        elif key == glfw.KEY_E:
+            distance += 0.01
+        elif key == glfw.KEY_Q:
+            distance -= 0.01
+        elif key == glfw.KEY_UP:
+            x += 0.01
+        elif key == glfw.KEY_DOWN:
+            x -= 0.01
+        elif key == glfw.KEY_LEFT:
+            y += 0.01
+        elif key == glfw.KEY_RIGHT:
+            y -= 0.01
+        elif key == glfw.KEY_Z:
+            z += 0.01
+        elif key == glfw.KEY_X:
+            z -= 0.01
+        elif action == glfw.PRESS and key == glfw.KEY_SPACE:
+            render_mode = (render_mode + 1) % len(render_mode_dict)
+
+    glfw.set_key_callback(window, key_callback)
 
     # loop until the user closes the window
     while not glfw.window_should_close(window):
         # matrices
-        global AZIMUTH, ALTITUDE, DISTANCE
         eye = glm.vec3(
-            DISTANCE * np.cos(AZIMUTH) * np.sin(ALTITUDE),
-            DISTANCE * np.sin(AZIMUTH) * np.sin(ALTITUDE),
-            DISTANCE * np.cos(ALTITUDE)
+            distance * np.cos(azimuth) * np.sin(altitude),
+            distance * np.sin(azimuth) * np.sin(altitude),
+            distance * np.cos(altitude)
         )
         center = glm.vec3(0, 0, 0)
         up = glm.vec3(0, 0, -1)
 
-        proj_mat = glm.perspective(30, SCREEN_WIDTH / SCREEN_HEIGHT, 0.01, 100)
+        proj_mat = glm.perspective(30, screen_width / screen_height, 0.01, 100)
         view_mat = glm.lookAt(eye, center, up)
-        model_mat = glm.translate(glm.identity(glm.fmat4), glm.vec3(0, 0, 0))
+        model_mat = glm.translate(glm.identity(glm.fmat4), glm.vec3(x, y, z))
 
         # rendering
         gl.glClearColor(0, 0, 0, 1)
@@ -168,6 +215,7 @@ def show_point_cloud(point_cloud: np.ndarray):
         gl.glUniformMatrix4fv(uniforms[VIEW_MAT_UNIFORM], 1, gl.GL_FALSE, glm.value_ptr(view_mat))
         gl.glUniformMatrix4fv(uniforms[MODEL_MAT_UNIFORM], 1, gl.GL_FALSE, glm.value_ptr(model_mat))
         gl.glUniform1f(uniforms[POINT_SIZE], 2.5)
+        gl.glUniform1f(uniforms[RENDER_MODE], render_mode_dict[render_mode])
 
         gl.glBindVertexArray(vao)
         gl.glDrawElements(gl.GL_POINTS, point_cloud.shape[0], gl.GL_UNSIGNED_INT, None)
@@ -183,13 +231,6 @@ def show_point_cloud(point_cloud: np.ndarray):
         glfw.swap_buffers(window)
         glfw.poll_events()
 
-        # gl.glReadBuffer(gl.GL_FRONT)
-        # pixels = gl.glReadPixels(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, gl.GL_RGBA, gl.GL_FLOAT)
-        # img = np.frombuffer(pixels, np.float32)
-        # img = img.reshape((SCREEN_WIDTH, SCREEN_HEIGHT, -1))
-        # img = img[::-1, :]
-        # img = Image.fromarray(np.uint8(img * 255)).convert('RGB')
-
     # cleanup
     gl.glDeleteVertexArrays(1, vao)
     gl.glDeleteBuffers(1, vbo)
@@ -199,10 +240,25 @@ def show_point_cloud(point_cloud: np.ndarray):
     glfw.terminate()
 
 
+def print_controls():
+    print("""
+    wasd to rotate
+    qe to move closer/farther
+    arrow keys to move around in xy plane
+    zx to move up and down
+    space to toggle intensity-label-solid
+    """)
+
+
 if __name__ == "__main__":
     import pickle
 
     with open('data/pc.pkl', 'rb') as f:
         pc = pickle.load(f)
+    with open('data/labels.pkl', 'rb') as f:
+        labels = pickle.load(f)
+    with open('data/color_map.yaml', 'r') as f:
+        color_map = yaml.safe_load(f)['color_map']
 
-    show_point_cloud(pc[::10])
+    decimate = 10
+    show_point_cloud('Render', pc[::decimate], labels[::decimate], color_map)
