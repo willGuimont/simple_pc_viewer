@@ -1,5 +1,4 @@
 import ctypes
-import yaml
 import platform
 from typing import Optional, Dict, List
 
@@ -106,11 +105,11 @@ def setup_buffers(point_cloud, labels, color_map):
     gl.glBindVertexArray(vao)
 
     gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
-    gl.glBufferData(gl.GL_ARRAY_BUFFER, vertices, gl.GL_STATIC_DRAW)
+    gl.glBufferData(gl.GL_ARRAY_BUFFER, vertices.size * vertices.itemsize, vertices.flatten(), gl.GL_STATIC_DRAW)
 
     gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ebo)
-    indices = np.arange(vertices.shape[0])
-    gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, indices, gl.GL_STATIC_DRAW)
+    indices = np.arange(vertices.shape[0], dtype=np.uintc)
+    gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, indices.size * indices.itemsize, indices.flatten(), gl.GL_STATIC_DRAW)
 
     # position
     gl.glVertexAttribPointer(0, 4, gl.GL_FLOAT, gl.GL_FALSE, size_per_point * vertices.itemsize, None)
@@ -133,14 +132,36 @@ def show_point_cloud(win_title: str,
                      color_map: Dict[int, List[int]] = None,
                      screen_width: int = 256 * 3,
                      screen_height: int = 256 * 3,
-                     azimuth: float = 0,
-                     altitude: float = np.pi / 6,
+                     azimuth: float = np.pi,
+                     altitude: float = 1e-3,
                      distance: float = 0.5,
                      x: float = 0,
                      y: float = 0,
                      z: float = 0):
+    """
+    Opens an OpenGL window to display a point cloud
+    :param win_title: title of the window
+    :param point_cloud: point cloud to display (N, 4)
+    :param label: semantic label for each point (N,)
+    :param color_map: maps each semantic label to a color (BGR)
+    :param screen_width: screen width
+    :param screen_height: screen height
+    :param azimuth: angle around the z-axis
+    :param altitude: angle from the z-axis
+    :param distance: distance of the camera from the origin
+    :param x: translates the pc in x
+    :param y: translates the pc in y
+    :param z: translates the pc in z
+    :return: None
+    """
     if label is not None and color_map is None:
         raise ValueError('Need to provide colod_map')
+
+    # normalize and change sign of translation
+    max_dist = np.max(np.linalg.norm(point_cloud[:, :3], axis=1))
+    x /= -max_dist
+    y /= -max_dist
+    z /= -max_dist
 
     window = create_window(win_title, screen_width, screen_height)
     shader_program, shaders, uniforms = setup_shaders()
@@ -201,7 +222,7 @@ def show_point_cloud(win_title: str,
         center = glm.vec3(0, 0, 0)
         up = glm.vec3(0, 0, -1)
 
-        proj_mat = glm.perspective(30, screen_width / screen_height, 0.01, 100)
+        proj_mat = glm.perspective(30, screen_width / screen_height, 1e-6, 1e6)
         view_mat = glm.lookAt(eye, center, up)
         model_mat = glm.translate(glm.identity(glm.fmat4), glm.vec3(x, y, z))
 
@@ -227,6 +248,8 @@ def show_point_cloud(win_title: str,
             if shader_log != '':
                 print('vertex' if shader == 1 else 'fragment')
                 print(shader_log)
+        if (err := gl.glGetError()) != 0:
+            print(f'error {err}')
 
         glfw.swap_buffers(window)
         glfw.poll_events()
@@ -252,6 +275,7 @@ def print_controls():
 
 if __name__ == "__main__":
     import pickle
+    import yaml
 
     with open('data/pc.pkl', 'rb') as f:
         pc = pickle.load(f)
