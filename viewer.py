@@ -92,7 +92,7 @@ def setup_buffers(point_cloud, labels, color_map):
     vertices[:, :4] = point_cloud
     if has_labels:
         for label, color in color_map.items():
-            vertices[labels == label, 4:7] = color[::-1]
+            vertices[labels == label, 4:7] = np.array(color[::-1]) / 255
 
     max_dist = np.max(np.linalg.norm(vertices[:, :3], axis=1))
     vertices[:, :3] /= max_dist
@@ -142,7 +142,7 @@ def show_point_cloud(win_title: str,
     :param win_title: title of the window
     :param point_cloud: point cloud to display (N, 4)
     :param label: semantic label for each point (N,)
-    :param color_map: maps each semantic label to a color (BGR)
+    :param color_map: maps each semantic label to a color (BGR, 0-255)
     :param screen_width: screen width
     :param screen_height: screen height
     :param azimuth: angle around the z-axis
@@ -226,7 +226,7 @@ def show_point_cloud(win_title: str,
         model_mat = glm.translate(glm.identity(glm.fmat4), glm.vec3(x, y, z))
 
         # rendering
-        gl.glClearColor(0, 0, 0, 1)
+        gl.glClearColor(0.75, 0.75, 0.75, 1)
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
         gl.glUseProgram(shader_program)

@@ -20,6 +20,6 @@ void main()
     } else if (fragRenderMode < 0.15) {
         FragColor = vec4(fragLabelColor, 1);
     } else if (fragRenderMode < 0.25) {
-        FragColor = vec4(vec3(1, 1, 1), 1);
+        FragColor = vec4(vec3(0, 0, 0), 1);
     }
 }
