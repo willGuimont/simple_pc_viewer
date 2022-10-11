@@ -91,9 +91,8 @@ def setup_buffers(point_cloud, labels, color_map):
 
     vertices[:, :4] = point_cloud
     if has_labels:
-        for i, label in enumerate(labels):
-            if label in color_map:
-                vertices[i, 4:7] = color_map[label][::-1]
+        for label, color in color_map.items():
+            vertices[labels == label, 4:7] = color[::-1]
 
     max_dist = np.max(np.linalg.norm(vertices[:, :3], axis=1))
     vertices[:, :3] /= max_dist
