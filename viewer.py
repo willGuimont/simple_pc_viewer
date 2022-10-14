@@ -132,7 +132,7 @@ def show_point_cloud(win_title: str,
                      color_map: Dict[int, List[int]] = None,
                      screen_width: int = 256 * 3,
                      screen_height: int = 256 * 3,
-                     azimuth: float = np.pi,
+                     azimuth: float = -np.pi / 2,
                      altitude: float = 1e-3,
                      distance: float = 0.5,
                      x: float = 0,
@@ -159,9 +159,9 @@ def show_point_cloud(win_title: str,
 
     # normalize and change sign of translation
     max_dist = np.max(np.linalg.norm(point_cloud[:, :3], axis=1))
-    x /= -max_dist
-    y /= -max_dist
-    z /= -max_dist
+    x /= max_dist
+    y /= max_dist
+    z /= max_dist
 
     window = create_window(win_title, screen_width, screen_height)
     shader_program, shaders, uniforms = setup_shaders()
