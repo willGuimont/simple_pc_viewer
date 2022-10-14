@@ -194,13 +194,13 @@ def show_point_cloud(win_title: str,
         elif key == glfw.KEY_Q:
             distance -= 0.01
         elif key == glfw.KEY_UP:
-            x += 0.01
-        elif key == glfw.KEY_DOWN:
-            x -= 0.01
-        elif key == glfw.KEY_LEFT:
-            y += 0.01
-        elif key == glfw.KEY_RIGHT:
             y -= 0.01
+        elif key == glfw.KEY_DOWN:
+            y += 0.01
+        elif key == glfw.KEY_LEFT:
+            x += 0.01
+        elif key == glfw.KEY_RIGHT:
+            x -= 0.01
         elif key == glfw.KEY_Z:
             z += 0.01
         elif key == glfw.KEY_X:
