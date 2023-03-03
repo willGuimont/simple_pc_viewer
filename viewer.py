@@ -14,7 +14,7 @@ POINT_SIZE = 'vertPointSize'
 RENDER_MODE = 'vertRenderMode'
 
 
-def create_window(title, screen_width, screen_height):
+def _create_window(title, screen_width, screen_height):
     # initialize the library
     if not glfw.init():
         return
@@ -35,10 +35,10 @@ def create_window(title, screen_width, screen_height):
     return window
 
 
-def setup_shaders():
+def _setup_shaders(vertex_path, frag_path):
     # vertex shaders
     vertex_shader = gl.glCreateShader(gl.GL_VERTEX_SHADER)
-    with open('shaders/vertex.vert') as f:
+    with open(vertex_path) as f:
         vertex_shader_source = f.read()
     gl.glShaderSource(vertex_shader, vertex_shader_source)
     gl.glCompileShader(vertex_shader)
@@ -47,7 +47,7 @@ def setup_shaders():
 
     # fragment shader
     fragment_shader = gl.glCreateShader(gl.GL_FRAGMENT_SHADER)
-    with open('shaders/fragment.frag') as f:
+    with open(frag_path) as f:
         fragment_shader_source = f.read()
     gl.glShaderSource(fragment_shader, fragment_shader_source)
     gl.glCompileShader(fragment_shader)
@@ -80,19 +80,25 @@ def setup_shaders():
     }
 
 
-def setup_buffers(point_cloud, labels, color_map):
+def _setup_buffers(point_cloud, labels, color_map):
     has_labels = labels is not None
 
+    cloud_dim = point_cloud.shape[1]
+    has_intensity = cloud_dim == 4
     size_per_point = 4
     if has_labels:
         size_per_point += 3
 
     vertices = np.zeros((point_cloud.shape[0], size_per_point), dtype=np.float32)
 
-    vertices[:, :4] = point_cloud
+    if not has_intensity:
+        vertices[:, 3] = 0
+
+    vertices[:, :cloud_dim] = point_cloud
     if has_labels:
         for label, color in color_map.items():
-            vertices[labels == label, 4:7] = np.array(color[::-1]) / 255
+            start = 4 if has_intensity else 3
+            vertices[labels == label, start:(start + 3)] = np.array(color[::-1], dtype=np.float32) / 255
 
     max_dist = np.max(np.linalg.norm(vertices[:, :3], axis=1))
     vertices[:, :3] /= max_dist
@@ -110,19 +116,99 @@ def setup_buffers(point_cloud, labels, color_map):
     indices = np.arange(vertices.shape[0], dtype=np.uintc)
     gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, indices.size * indices.itemsize, indices.flatten(), gl.GL_STATIC_DRAW)
 
-    # position
+    # attrib position
     gl.glVertexAttribPointer(0, 4, gl.GL_FLOAT, gl.GL_FALSE, size_per_point * vertices.itemsize, None)
     gl.glEnableVertexAttribArray(0)
 
     if has_labels:
         gl.glVertexAttribPointer(1, 3, gl.GL_FLOAT, gl.GL_FALSE, size_per_point * vertices.itemsize,
-                                 ctypes.c_void_p(4 * vertices.itemsize))
+                                 ctypes.c_void_p(cloud_dim * vertices.itemsize))
         gl.glEnableVertexAttribArray(1)
 
     gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
     gl.glBindVertexArray(0)
 
     return vao, vbo, ebo
+
+
+def _make_box_vertices_and_indices(boxes: np.ndarray) -> (np.ndarray, np.ndarray):
+    num_boxes = boxes.shape[0]
+    points_per_box = 8
+    triangles_per_box = 12
+    points = np.zeros((points_per_box * num_boxes, 3), dtype=np.float32)
+    indices = np.zeros((triangles_per_box * num_boxes, 3), dtype=np.uintc)
+    for i, [cx, cy, cz, l, w, h, theta] in enumerate(boxes):
+        base_point_index = i * points_per_box
+        base_indices_index = i * triangles_per_box
+        dl, dw = l / 2, w / 2
+
+        center = [cx, cy, cz]
+        d = np.array([np.cos(theta), np.sin(theta), 0])
+        phi = theta + np.pi / 2
+        d_bar = np.array([np.cos(phi), np.sin(phi), 0])
+        z = np.array([0, 0, 1])
+
+        points[base_point_index + 0, :] = d * dl + d_bar * dw
+        points[base_point_index + 1, :] = - d * dl + d_bar * dw
+        points[base_point_index + 2, :] = - d * dl - d_bar * dw
+        points[base_point_index + 3, :] = d * dl - d_bar * dw
+
+        for j in range(4):
+            points[base_point_index + 4 + j] = points[base_point_index + j] + h * z
+
+        # center points
+        points[base_point_index:base_point_index + 8] += center
+
+        num_faces = 0
+        # side faces
+        for j in range(4):
+            indices[base_indices_index + num_faces] = [base_point_index + j, (j + 1) % 4 + base_point_index,
+                                                       base_point_index + j + 4]
+            num_faces += 1
+            indices[base_indices_index + num_faces] = [(j + 1) % 4 + base_point_index,
+                                                       base_point_index + (j + 1) % 4 + 4,
+                                                       j + 4 + base_point_index]
+            num_faces += 1
+
+        # bottom face
+        indices[base_indices_index + num_faces] = [base_point_index, base_point_index + 3, base_point_index + 1]
+        num_faces += 1
+        indices[base_indices_index + num_faces] = [base_point_index + 1, base_point_index + 3, base_point_index + 2]
+        num_faces += 1
+
+        # top face
+        indices[base_indices_index + num_faces] = [base_point_index, base_point_index + 3, base_point_index + 1]
+        indices[base_indices_index + num_faces] += 4
+        num_faces += 1
+        indices[base_indices_index + num_faces] = [base_point_index + 1, base_point_index + 3, base_point_index + 2]
+        indices[base_indices_index + num_faces] += 4
+        num_faces += 1
+
+    return points, indices
+
+
+def _setup_box_buffers(box_vertices, box_indices):
+    box_vao = gl.glGenVertexArrays(1)
+    box_ebo = gl.glGenBuffers(1)
+    box_vbo = gl.glGenBuffers(1)
+
+    gl.glBindVertexArray(box_vao)
+
+    gl.glBindBuffer(gl.GL_ARRAY_BUFFER, box_vbo)
+    gl.glBufferData(gl.GL_ARRAY_BUFFER, box_vertices.size * box_vertices.itemsize, box_vertices.flatten(),
+                    gl.GL_STATIC_DRAW)
+
+    gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, box_ebo)
+    gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, box_indices.size * box_indices.itemsize, box_indices.flatten(),
+                    gl.GL_STATIC_DRAW)
+
+    # attrib positions
+    gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, 3 * box_vertices.itemsize, None)
+    gl.glEnableVertexAttribArray(0)
+    gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+    gl.glBindVertexArray(0)
+
+    return box_ebo, box_vao, box_vbo
 
 
 def show_point_cloud(win_title: str,
@@ -136,7 +222,8 @@ def show_point_cloud(win_title: str,
                      distance: float = 0.5,
                      x: float = 0,
                      y: float = 0,
-                     z: float = 0):
+                     z: float = 0,
+                     box_labels: Optional[np.ndarray] = None):
     """
     Opens an OpenGL window to display a point cloud
     :param win_title: title of the window
@@ -151,6 +238,7 @@ def show_point_cloud(win_title: str,
     :param x: translates the pc in x
     :param y: translates the pc in y
     :param z: translates the pc in z
+    :param box_labels: bounding boxes labels to draw, format [nb_boxes, (cx, cy, cz, l, w, h, theta)]
     :return: None
     """
     if label is not None and color_map is None:
@@ -162,11 +250,25 @@ def show_point_cloud(win_title: str,
     y /= max_dist
     z /= max_dist
 
-    window = create_window(win_title, screen_width, screen_height)
-    shader_program, shaders, uniforms = setup_shaders()
-    vao, vbo, ebo = setup_buffers(point_cloud, label, color_map)
+    window = _create_window(win_title, screen_width, screen_height)
+    shader_program, shaders, uniforms = _setup_shaders('shaders/vertex.vert',
+                                                       'shaders/fragment.frag')
+    vao, vbo, ebo = _setup_buffers(point_cloud, label, color_map)
     render_mode = 0
     render_mode_dict = {0: 0, 1: 0.1, 2: 0.2}
+
+    has_boxes = box_labels is not None
+    if has_boxes:
+        box_vertices, box_indices = _make_box_vertices_and_indices(box_labels)
+        box_vertices /= max_dist
+
+        box_ebo, box_vao, box_vbo = _setup_box_buffers(box_vertices, box_indices)
+        box_shader_program, box_shaders, box_uniforms = _setup_shaders(
+            'point_mask/visualization/shaders/box_vertex.vert', 'point_mask/visualization/shaders/box_fragment.frag')
+    else:
+        box_vertices, box_indices = None, None
+        box_ebo, box_vao, box_vbo = None, None, None
+        box_shader_program, box_shaders, box_uniforms = None, None, None
 
     def framebuffer_size_callback(_, width, height):
         nonlocal screen_width, screen_height
@@ -194,13 +296,13 @@ def show_point_cloud(win_title: str,
         elif key == glfw.KEY_Q:
             distance -= 0.01
         elif key == glfw.KEY_UP:
-            y -= 0.01
-        elif key == glfw.KEY_DOWN:
-            y += 0.01
-        elif key == glfw.KEY_LEFT:
-            x += 0.01
-        elif key == glfw.KEY_RIGHT:
             x -= 0.01
+        elif key == glfw.KEY_DOWN:
+            x += 0.01
+        elif key == glfw.KEY_LEFT:
+            y -= 0.01
+        elif key == glfw.KEY_RIGHT:
+            y += 0.01
         elif key == glfw.KEY_Z:
             z += 0.01
         elif key == glfw.KEY_X:
@@ -226,7 +328,7 @@ def show_point_cloud(win_title: str,
         model_mat = glm.translate(glm.identity(glm.fmat4), glm.vec3(x, y, z))
 
         # rendering
-        gl.glClearColor(0.75, 0.75, 0.75, 1)
+        gl.glClearColor(1, 1, 1, 1)
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
         gl.glUseProgram(shader_program)
@@ -240,6 +342,21 @@ def show_point_cloud(win_title: str,
         gl.glBindVertexArray(vao)
         gl.glDrawElements(gl.GL_POINTS, point_cloud.shape[0], gl.GL_UNSIGNED_INT, None)
         gl.glBindVertexArray(0)
+
+        if has_boxes:
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
+            gl.glUseProgram(box_shader_program)
+
+            gl.glUniformMatrix4fv(box_uniforms[PROJ_MAT_UNIFORM], 1, gl.GL_FALSE, glm.value_ptr(proj_mat))
+            gl.glUniformMatrix4fv(box_uniforms[VIEW_MAT_UNIFORM], 1, gl.GL_FALSE, glm.value_ptr(view_mat))
+            gl.glUniformMatrix4fv(box_uniforms[MODEL_MAT_UNIFORM], 1, gl.GL_FALSE, glm.value_ptr(model_mat))
+            gl.glUniform1f(box_uniforms[POINT_SIZE], 2.5)
+            gl.glUniform1f(box_uniforms[RENDER_MODE], render_mode_dict[render_mode])
+
+            gl.glBindVertexArray(box_vao)
+            gl.glDrawElements(gl.GL_TRIANGLES, box_indices.shape[0] * 3, gl.GL_UNSIGNED_INT, None)
+            gl.glBindVertexArray(0)
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
 
         # shader logs
         for i, shader in enumerate(shaders):
@@ -258,6 +375,11 @@ def show_point_cloud(win_title: str,
     gl.glDeleteBuffers(1, vbo)
     gl.glDeleteBuffers(1, ebo)
     gl.glDeleteProgram(shader_program)
+
+    gl.glDeleteVertexArrays(1, box_vao)
+    gl.glDeleteBuffers(1, box_vbo)
+    gl.glDeleteBuffers(1, box_ebo)
+    gl.glDeleteProgram(box_shader_program)
 
     glfw.terminate()
 
