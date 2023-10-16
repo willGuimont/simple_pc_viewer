@@ -1,5 +1,7 @@
 # simple_pc_viewer
 
+[Video of the viewer in action](https://www.youtube.com/shorts/H557pRHr0Bg).
+
 <img src="doc/screenshot.png" width="400" height="400" />
 
 ## Installation & Run
