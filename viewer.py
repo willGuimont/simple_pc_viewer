@@ -223,7 +223,8 @@ def show_point_cloud(win_title: str,
                      x: float = 0,
                      y: float = 0,
                      z: float = 0,
-                     box_labels: Optional[np.ndarray] = None):
+                     box_labels: Optional[np.ndarray] = None,
+                     auto_rotate: bool = False):
     """
     Opens an OpenGL window to display a point cloud
     :param win_title: title of the window
@@ -314,6 +315,9 @@ def show_point_cloud(win_title: str,
 
     # loop until the user closes the window
     while not glfw.window_should_close(window):
+        if auto_rotate:
+            azimuth += 0.005
+
         # matrices
         eye = glm.vec3(
             distance * np.cos(azimuth) * np.sin(altitude),
@@ -403,11 +407,12 @@ if __name__ == "__main__":
     # python viewer.py data/pc.npy --labels data/labels.npy --color_map data/color_map.yaml --decimate 10
     # python viewer.py data/waymo_pc.npy --box_labels data/waymo_labels.npy --decimate 10
     parser = argparse.ArgumentParser()
-    parser.add_argument('pc', type=str)
-    parser.add_argument('--labels', type=str)
-    parser.add_argument('--color_map', type=str, default='data/color_map.yaml')
-    parser.add_argument('--decimate', type=int, default=10)
-    parser.add_argument('--box_labels', type=str, default=None)
+    parser.add_argument('pc', type=str, help='Point cloud to render')
+    parser.add_argument('--labels', type=str, help='Semantic labels for each point')
+    parser.add_argument('--color_map', type=str, default='data/color_map.yaml', help='Color map for each label')
+    parser.add_argument('--decimate', type=int, default=10, help='Keep one point every `decimate` points')
+    parser.add_argument('--box_labels', type=str, default=None, help='Bounding boxes to render')
+    parser.add_argument('--rotate', action='store_true', default=False, help='Rotate the point cloud automatically')
     args = parser.parse_args()
 
     pc_path = args.pc
@@ -415,6 +420,7 @@ if __name__ == "__main__":
     color_map_path = args.color_map
     decimate = args.decimate
     box_labels_path = args.box_labels
+    rotate = args.rotate
 
     pc = np.load(pc_path)
     if labels_path is not None:
@@ -433,4 +439,4 @@ if __name__ == "__main__":
     labels = labels[::decimate] if labels is not None else None
 
     print_controls()
-    show_point_cloud('Render semantic - Press space', pc, labels, color_map, box_labels=box_labels)
+    show_point_cloud('Render', pc, labels, color_map, box_labels=box_labels, auto_rotate=rotate)
