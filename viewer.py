@@ -264,7 +264,7 @@ def show_point_cloud(win_title: str,
 
         box_ebo, box_vao, box_vbo = _setup_box_buffers(box_vertices, box_indices)
         box_shader_program, box_shaders, box_uniforms = _setup_shaders(
-            'point_mask/visualization/shaders/box_vertex.vert', 'point_mask/visualization/shaders/box_fragment.frag')
+            'shaders/box_vertex.vert', 'shaders/box_fragment.frag')
     else:
         box_vertices, box_indices = None, None
         box_ebo, box_vao, box_vbo = None, None, None
@@ -376,16 +376,17 @@ def show_point_cloud(win_title: str,
     gl.glDeleteBuffers(1, ebo)
     gl.glDeleteProgram(shader_program)
 
-    gl.glDeleteVertexArrays(1, box_vao)
-    gl.glDeleteBuffers(1, box_vbo)
-    gl.glDeleteBuffers(1, box_ebo)
-    gl.glDeleteProgram(box_shader_program)
+    if has_boxes:
+        gl.glDeleteVertexArrays(1, box_vao)
+        gl.glDeleteBuffers(1, box_vbo)
+        gl.glDeleteBuffers(1, box_ebo)
+        gl.glDeleteProgram(box_shader_program)
 
     glfw.terminate()
 
 
 def print_controls():
-    print("""
+    print("""Simple point cloud viewer
     wasd to rotate
     qe to move closer/farther
     arrow keys to move around in xy plane
@@ -395,15 +396,41 @@ def print_controls():
 
 
 if __name__ == "__main__":
-    import pickle
     import yaml
+    import argparse
 
-    with open('data/pc.pkl', 'rb') as f:
-        pc = pickle.load(f)
-    with open('data/labels.pkl', 'rb') as f:
-        labels = pickle.load(f)
-    with open('data/color_map.yaml', 'r') as f:
+    # Example usage:
+    # python viewer.py data/pc.npy --labels data/labels.npy --color_map data/color_map.yaml --decimate 10
+    # python viewer.py data/waymo_pc.npy --box_labels data/waymo_labels.npy --decimate 10
+    parser = argparse.ArgumentParser()
+    parser.add_argument('pc', type=str)
+    parser.add_argument('--labels', type=str)
+    parser.add_argument('--color_map', type=str, default='data/color_map.yaml')
+    parser.add_argument('--decimate', type=int, default=10)
+    parser.add_argument('--box_labels', type=str, default=None)
+    args = parser.parse_args()
+
+    pc_path = args.pc
+    labels_path = args.labels
+    color_map_path = args.color_map
+    decimate = args.decimate
+    box_labels_path = args.box_labels
+
+    pc = np.load(pc_path)
+    if labels_path is not None:
+        labels = np.load(labels_path)
+    else:
+        labels = None
+    if box_labels_path is not None:
+        box_labels = np.load(box_labels_path)
+    else:
+        box_labels = None
+
+    with open(color_map_path, 'r') as f:
         color_map = yaml.safe_load(f)['color_map']
 
-    decimate = 10
-    show_point_cloud('Render', pc[::decimate], labels[::decimate], color_map)
+    pc = pc[::decimate]
+    labels = labels[::decimate] if labels is not None else None
+
+    print_controls()
+    show_point_cloud('Render semantic - Press space', pc, labels, color_map, box_labels=box_labels)
